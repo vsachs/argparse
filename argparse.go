@@ -694,7 +694,11 @@ func arguments2Result(result string, arguments []*arg, maxWidth int) string {
 				} else {
 					arg = arg + "    "
 				}
-				arg = arg + "--" + argument.lname
+				if arg.GetPositional() {
+					arg = arg + argument.lname
+				} else {
+					arg = arg + "--" + argument.lname
+				}
 				arg = arg + strings.Repeat(" ", argPadding-len(arg))
 				if argument.opts != nil && argument.opts.Help != "" {
 					arg = addToLastLine(arg, argument.getHelpMessage(), maxWidth, argPadding, true)
