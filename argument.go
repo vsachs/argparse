@@ -593,3 +593,46 @@ func (o *arg) setDefault() error {
 
 	return nil
 }
+
+func prepareList(atype ArgumentType, mode NargsMode, count uint, opts *Options) *arg {
+	if opts == nil {
+		opts = &Options{}
+	}
+	var result interface{}
+	switch atype {
+	case StringList:
+		result = make([]string, 0)
+	case IntList:
+		result = make([]int, 0)
+	case FloatList:
+		result = make([]float64, 0)
+	case FileList:
+		result = make([]os.File, 0)
+	default:
+		panic(fmt.Errorf("Invalid argument type: %v", atype))
+	}
+
+	a := &arg{
+		result:  &result,
+		size:    2,
+		opts:    opts,
+		unique:  false,
+		argType: atype,
+	}
+	if mode != NargsDisabled {
+		opts.nargsMode = mode
+		opts.nargs = count   // record keeping
+		a.size += int(count) // functional effect, OVERFLOW!?
+	}
+
+	return a
+}
+
+// Positional Prefix
+// This must not overlap with any other arguments given or library
+// will panic.
+const positionalArgName = "_positionalArg_%s_%d"
+
+func generatePositionalName(o *Command) string {
+	return fmt.Sprintf(positionalArgName, o.name, len(o.args))
+}

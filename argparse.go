@@ -8,25 +8,8 @@ import (
 	"strings"
 )
 
-// NargsMode enum
-const (
-	NargsDisabled          = iota
-	NargsGreedy            // Require exactly the given number, consume all tokens, Nargs >= 1
-	NargsRemaining         // Treat given number as a minimum, consume all remaining tokens
-	NargsRemainingCautious // Treat given number as a minimum, consume all tokens but halt without error if a -f/--flag is seen
-	// NargsUpTo
-	// NargsAtLeast
-	// NargsUpToCautious = 3
-	// NargsAtLeastCautious
-)
-
 // DisableDescription can be assigned as a command or arguments description to hide it from the Usage output
 const DisableDescription = "DISABLEDDESCRIPTIONWILLNOTSHOWUP"
-
-// Positional Prefix
-// This must not overlap with any other arguments given or library
-// will panic.
-const positionalArgName = "_positionalArg_%s_%d"
 
 //disable help can be invoked from the parse and then needs to be propogated to subcommands
 var disableHelp = false
@@ -100,27 +83,11 @@ type Parser struct {
 // Options.positional - tells Parser that the argument is positional. Set to true by using *Positional functions.
 // Positional arguments must not have arg name preceding them and must come in a specific order.
 // Positionals are parsed breadth-first (left->right from Command tree root to leaf)
-// Positional sets Shortname="", ignores Required
-// Positionals which are not satisfied will be nil but no error will be thrown
+// Positional sets Shortname=""
+// Positionals which are not satisfied will be the type default but no error will be thrown
 // Notes:
 //     Options.Default is only used for unparsed positionals on commands which happened
 //     Use arg.GetParsed() to detect if arg was satisfied or not
-//
-// Options.Nargs - Causes the argument to consume exactly the specified number of tokens from the command line.
-// An error will be thrown if the specified number cannot be consumed.
-// Flag-style (-/--) arguments are parsed before positionals. They will consume the specified number of tokens
-// and subsequently positional arguments will consume their specified number of tokens.
-// Notes:
-//     A positional with Narg:0 must be the final positional defined in any command heirarchy.
-//     Multiple positionals with Narg:0 specified will cause any call to Parse() to return an error.
-//     Options.Required does not effect parsing of Nargs in any way.
-//     There is no way to specify "consume up to X".
-// +X causes consumption of as many tokens as specified, no exceptions or bypass (matching current flag-style behavior),
-// which will consume any token regardless of it is preceded by -/--, matches an argument or would satisfy a positional.
-// 0 causes consumption of as many tokens as possible, ending without error if a flag-style arg is seen, which may
-// cause "unknown argument" errors if a user breaks up a token series with a flag-style arg, as the remainder tokens are unparsed.
-// -X causes consumption of as many tokens as specified, halting with an error if a flag-style arg is seen, which
-// allows applications to more easily detect the condition when a user failed to supply the specified number of args.
 //
 // Options.Required - tells Parser that this argument is required to be provided.
 // useful when specific Command requires some data provided.
@@ -137,16 +104,35 @@ type Parser struct {
 // in case if this argument was not supplied on command line. File default value is a string which it will be open with
 // provided options. In case if provided value type does not match expected, the error will be returned on run-time.
 type Options struct {
-	Required  bool
-	Validate  func(args []string) error
-	Help      string
-	Default   interface{}
-	NargsMode int
-	Nargs     int
+	Required bool
+	Validate func(args []string) error
+	Help     string
+	Default  interface{}
 
 	// Private modifiers
 	positional bool
+	nargsMode  NargsMode
+	nargs      uint
 }
+
+// NargsMode
+type NargsMode int
+
+// Nargs is an argument style which requires all values to the argument
+//     to be arranged sequentially on the command line.
+// For flag style arguments this means: --flag1 value1 value2 value3
+// For positional arguments this means: value1 value2 value3
+// Recurrence of a flag style argument is allowed and will append values.
+const (
+	NargsDisabled          NargsMode = iota // Must be the 0 value
+	NargsGreedy                             // Require exactly the given number, consume all tokens, Nargs >= 1
+	NargsRemaining                          // Treat given number as a minimum, consume all remaining tokens
+	NargsRemainingCautious                  // Treat given number as a minimum, consume all tokens but halt without error if a -f/--flag is seen
+	// NargsUpTo
+	// NargsAtLeast
+	// NargsUpToCautious = 3
+	// NargsAtLeastCautious
+)
 
 // NewParser creates new Parser object that will allow to add arguments for parsing
 // It takes program name and description which will be used as part of Usage output
@@ -234,7 +220,6 @@ func (o *Parser) SetHelp(sname, lname string) {
 // Returns pointer to boolean with starting value `false`. If Parser finds the flag
 // provided on Command line arguments, then the value is changed to true.
 // Set of Flag and FlagCounter shorthand arguments can be combined together such as `tar -cvaf foo.tar foo`
-// Narg Compatibility: Incompatible
 func (o *Command) Flag(short string, long string, opts *Options) *bool {
 	var result bool
 
@@ -262,7 +247,6 @@ func (o *Command) Flag(short string, long string, opts *Options) *bool {
 // Returns pointer to integer with starting value `0`. Each time Parser finds the flag
 // provided on Command line arguments, the value is incremented by 1.
 // Set of FlagCounter and Flag shorthand arguments can be combined together such as `tar -cvaf foo.tar foo`
-// Narg Compatibility: Incompatible
 func (o *Command) FlagCounter(short string, long string, opts *Options) *int {
 	var result int
 
@@ -314,8 +298,35 @@ func (o *Command) StringPositional(opts *Options) *string {
 	opts.positional = true
 
 	// We supply a long name for documentation and internal logic
-	name := fmt.Sprintf(positionalArgName, o.name, len(o.args))
+	name := generatePositionalName(o)
 	return o.String("", name, opts)
+}
+
+// See func String documentation and Nargs documentation
+func (o *Command) StringNargs(short, long string, mode NargsMode, count uint, opts *Options) *[]string {
+	a := prepareList(StringList, mode, count, opts)
+	a.sname = short
+	a.lname = long
+
+	if err := o.addArg(a); err != nil {
+		panic(fmt.Errorf("unable to add StringList: %s", err.Error()))
+	}
+
+	return a.result.(*[]string)
+}
+
+// See func String documentation and Nargs documentation
+func (o *Command) StringPositionalNargs(mode NargsMode, count uint, opts *Options) *[]string {
+	a := prepareList(StringList, mode, count, opts)
+	a.sname = ""
+	a.lname = generatePositionalName(o)
+	a.opts.positional = true
+
+	if err := o.addArg(a); err != nil {
+		panic(fmt.Errorf("unable to add StringList: %s", err.Error()))
+	}
+
+	return a.result.(*[]string)
 }
 
 // Int creates new int argument, which will attempt to parse following argument as int.
@@ -350,8 +361,35 @@ func (o *Command) IntPositional(opts *Options) *int {
 	opts.positional = true
 
 	// We supply a long name for documentation and internal logic
-	name := fmt.Sprintf(positionalArgName, o.name, len(o.args))
+	name := generatePositionalName(o)
 	return o.Int("", name, opts)
+}
+
+// See func String documentation and Nargs documentation
+func (o *Command) IntNargs(short, long string, mode NargsMode, count uint, opts *Options) *[]int {
+	a := prepareList(IntList, mode, count, opts)
+	a.sname = short
+	a.lname = long
+
+	if err := o.addArg(a); err != nil {
+		panic(fmt.Errorf("unable to add IntNargs: %s", err.Error()))
+	}
+
+	return a.result.(*[]int)
+}
+
+// See func Int documentation and Nargs documentation
+func (o *Command) IntPositionalNargs(mode NargsMode, count uint, opts *Options) *[]int {
+	a := prepareList(IntList, mode, count, opts)
+	a.sname = ""
+	a.lname = generatePositionalName(o)
+	a.opts.positional = true
+
+	if err := o.addArg(a); err != nil {
+		panic(fmt.Errorf("unable to add IntPositionalNargs: %s", err.Error()))
+	}
+
+	return a.result.(*[]int)
 }
 
 // Float creates new float argument, which will attempt to parse following argument as float64.
@@ -386,8 +424,35 @@ func (o *Command) FloatPositional(opts *Options) *float64 {
 	opts.positional = true
 
 	// We supply a long name for documentation and internal logic
-	name := fmt.Sprintf(positionalArgName, o.name, len(o.args))
+	name := generatePositionalName(o)
 	return o.Float("", name, opts)
+}
+
+// See func Float documentation and Nargs documentation
+func (o *Command) FloatNargs(short, long string, mode NargsMode, count uint, opts *Options) *[]float64 {
+	a := prepareList(FloatList, mode, count, opts)
+	a.sname = short
+	a.lname = long
+
+	if err := o.addArg(a); err != nil {
+		panic(fmt.Errorf("unable to add FloatNargs: %s", err.Error()))
+	}
+
+	return a.result.(*[]float64)
+}
+
+// See func Float documentation and Nargs documentation
+func (o *Command) FloatPositionalNargs(mode NargsMode, count uint, opts *Options) *[]float64 {
+	a := prepareList(FloatList, mode, count, opts)
+	a.sname = ""
+	a.lname = generatePositionalName(o)
+	a.opts.positional = true
+
+	if err := o.addArg(a); err != nil {
+		panic(fmt.Errorf("unable to add FloatPositionalNargs: %s", err.Error()))
+	}
+
+	return a.result.(*[]float64)
 }
 
 // File creates new file argument, which is when provided will check if file exists or attempt to create it
@@ -427,8 +492,39 @@ func (o *Command) FilePositional(flag int, perm os.FileMode, opts *Options) *os.
 	opts.positional = true
 
 	// We supply a long name for documentation and internal logic
-	name := fmt.Sprintf(positionalArgName, o.name, len(o.args))
+	name := generatePositionalName(o)
 	return o.File("", name, flag, perm, opts)
+}
+
+// See func String documentation and Nargs documentation
+func (o *Command) FileNargs(short, long string, flag int, perm os.FileMode, mode NargsMode, count uint, opts *Options) *[]os.File {
+	a := prepareList(StringList, mode, count, opts)
+	a.sname = short
+	a.lname = long
+	a.fileFlag = flag
+	a.filePerm = perm
+
+	if err := o.addArg(a); err != nil {
+		panic(fmt.Errorf("unable to add StringList: %s", err.Error()))
+	}
+
+	return a.result.(*[]os.File)
+}
+
+// See func String documentation and Nargs documentation
+func (o *Command) FilePositionalNargs(flag int, perm os.FileMode, mode NargsMode, count uint, opts *Options) *[]os.File {
+	a := prepareList(StringList, mode, count, opts)
+	a.sname = ""
+	a.lname = generatePositionalName(o)
+	a.opts.positional = true
+	a.fileFlag = flag
+	a.filePerm = perm
+
+	if err := o.addArg(a); err != nil {
+		panic(fmt.Errorf("unable to add StringList: %s", err.Error()))
+	}
+
+	return a.result.(*[]os.File)
 }
 
 // List creates new list argument. This is the argument that is allowed to be present multiple times on CLI.
@@ -573,9 +669,17 @@ func (o *Command) SelectorPositional(allowed []string, opts *Options) *string {
 	opts.positional = true
 
 	// We supply a long name for documentation and internal logic
-	name := fmt.Sprintf(positionalArgName, o.name, len(o.args))
+	name := generatePositionalName(o)
 	return o.Selector("", name, allowed, opts)
 }
+
+// Nargs (numbered args)
+// Creates an argument to consume tokens from the command line according
+//     to the NargsMode
+//
+// An error will be thrown if the specified number cannot be consumed.
+// Flag-style (-/--) arguments are parsed before positionals. They will consume the specified number of tokens
+// and subsequently positional arguments will consume their specified number of tokens.
 
 // message2String puts msg in result string
 // done boolean indicates if result is ready to be returned

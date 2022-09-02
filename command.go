@@ -61,9 +61,7 @@ func (o *Command) addArg(a *arg) error {
 		a.opts.Required = false
 		a.size = 1
 	}
-	if a.opts != nil {
-		a.size += a.opts.Nargs
-	}
+
 	o.args = append(o.args, a)
 
 	return nil
