@@ -59,7 +59,10 @@ func (o *Command) addArg(a *arg) error {
 		}
 		a.sname = ""
 		a.opts.Required = false
-		a.size = 1 // We could allow other sizes in the future
+		a.size = 1
+	}
+	if a.opts != nil {
+		a.size += a.opts.Nargs
 	}
 	o.args = append(o.args, a)
 
@@ -107,7 +110,7 @@ func (o *Command) parsePositionals(inputArgs *[]string) error {
 			if arg == "" {
 				continue
 			}
-			if err := oarg.parsePositional(arg); err != nil {
+			if err := oarg.parsePositional((*inputArgs)[j : j+oarg.size]); err != nil {
 				return err
 			}
 			oarg.reduce(j, inputArgs)
@@ -138,37 +141,42 @@ func (o *Command) parseArguments(inputArgs *[]string) error {
 		}
 		for j := 0; j < len(*inputArgs); j++ {
 			arg := (*inputArgs)[j]
-			if arg == "" {
+			if arg == "" { // If this input has been reduced already skip
 				continue
 			}
 			if strings.Contains(arg, "=") {
 				splitInd := strings.LastIndex(arg, "=")
 				equalArg := []string{arg[:splitInd], arg[splitInd+1:]}
-				if cnt, err := oarg.check(equalArg[0]); err != nil {
+				if flagCnt, err := oarg.check(equalArg[0]); err != nil {
 					return err
-				} else if cnt > 0 { // No args implies we supply default
-					if equalArg[1] == "" {
-						return fmt.Errorf("not enough arguments for %s", oarg.name())
+				} else if flagCnt > 0 {
+					if err := oarg.checkSizing(inputArgs, j, equalArg); err != nil {
+						return err
 					}
 					oarg.eqChar = true
-					oarg.size = 1
+					oarg.size -= 1 // Gnarly side-effect here
 					currArg := []string{equalArg[1]}
-					err := oarg.parse(currArg, cnt)
+					if oarg.size > 1 { // basically 'if Nargs > 1'
+						currArg = append(currArg,
+							(*inputArgs)[j+1:j+1+oarg.size-1]...)
+					}
+					err := oarg.parse(currArg, flagCnt)
 					if err != nil {
 						return err
 					}
 					oarg.reduce(j, inputArgs)
+					// side effects anyone?
+					oarg.size += 1
+					oarg.eqChar = false
 					continue
 				}
 			}
-			if cnt, err := oarg.check(arg); err != nil {
+			if flagCnt, err := oarg.check(arg); err != nil {
 				return err
-			} else if cnt > 0 {
-				if len(*inputArgs) < j+oarg.size {
-					return fmt.Errorf("not enough arguments for %s", oarg.name())
-				}
-				err := oarg.parse((*inputArgs)[j+1:j+oarg.size], cnt)
-				if err != nil {
+			} else if flagCnt > 0 {
+				if err := oarg.checkSizing(inputArgs, j, nil); err != nil {
+					return err
+				} else if err := oarg.parse((*inputArgs)[j+1:j+oarg.size], flagCnt); err != nil {
 					return err
 				}
 				oarg.reduce(j, inputArgs)

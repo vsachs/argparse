@@ -145,9 +145,23 @@ func (o *arg) check(argument string) (int, error) {
 
 	return o.checkShortName(argument)
 }
+func (o *arg) checkSizing(inp *[]string, ind int, kvp []string) error {
+	if kvp != nil {
+		ind -= 1
+	}
+	if len(*inp) < ind+o.size {
+		return fmt.Errorf("not enough arguments for %s", o.name())
+	} else if kvp != nil && kvp[1] == "" {
+		// Special case for --flag=value
+		return fmt.Errorf("empty value for %s", o.name())
+	}
+	return nil
+}
 
-func (o *arg) reducePositional(position int, args *[]string) {
-	(*args)[position] = ""
+func (o *arg) reducePositional(pos int, args *[]string) {
+	for ind := pos; ind < pos+o.size && ind < len(*args); ind++ {
+		(*args)[ind] = ""
+	}
 }
 
 func (o *arg) reduceLongName(position int, args *[]string) {
@@ -421,28 +435,29 @@ func (o *arg) parseSomeType(args []string, argCount int) error {
 	return err
 }
 
-func (o *arg) parsePositional(arg string) error {
-	if err := o.parse([]string{arg}, 1); err != nil {
+func (o *arg) parsePositional(arg []string) error {
+	if err := o.parse(arg, 1); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (o *arg) parse(args []string, argCount int) error {
-	// If unique do not allow more than one time
-	if o.unique && (o.parsed || argCount > 1) {
+// Params:
+//     args: array of values consumable by this argument
+//     flagCount: the number of repetitions of the flag-name
+func (o *arg) parse(args []string, flagCount int) error {
+	// If unique do not allow more than one `--flag`
+	if o.unique && (o.parsed || flagCount > 1) {
 		return fmt.Errorf("[%s] can only be present once", o.name())
 	}
-
-	// If validation function provided -- execute, on error return immediately
 	if o.opts != nil && o.opts.Validate != nil {
 		err := o.opts.Validate(args)
 		if err != nil {
 			return fmt.Errorf("[%s] %w", o.name(), err)
 		}
 	}
-	return o.parseSomeType(args, argCount)
+	return o.parseSomeType(args, flagCount)
 }
 
 func (o *arg) name() string {

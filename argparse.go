@@ -8,6 +8,18 @@ import (
 	"strings"
 )
 
+// NargsMode enum
+const (
+	NargsDisabled          = iota
+	NargsGreedy            // Require exactly the given number, consume all tokens, Nargs >= 1
+	NargsRemaining         // Treat given number as a minimum, consume all remaining tokens
+	NargsRemainingCautious // Treat given number as a minimum, consume all tokens but halt without error if a -f/--flag is seen
+	// NargsUpTo
+	// NargsAtLeast
+	// NargsUpToCautious = 3
+	// NargsAtLeastCautious
+)
+
 // DisableDescription can be assigned as a command or arguments description to hide it from the Usage output
 const DisableDescription = "DISABLEDDESCRIPTIONWILLNOTSHOWUP"
 
@@ -85,13 +97,30 @@ type Parser struct {
 // Options are specific options for every argument. They can be provided if necessary.
 // Possible fields are:
 //
-// Options.positional - tells Parser that the argument is positional (implies Required). Set to true by using *Positional functions.
+// Options.positional - tells Parser that the argument is positional. Set to true by using *Positional functions.
 // Positional arguments must not have arg name preceding them and must come in a specific order.
 // Positionals are parsed breadth-first (left->right from Command tree root to leaf)
 // Positional sets Shortname="", ignores Required
 // Positionals which are not satisfied will be nil but no error will be thrown
-// Defaults are only set for unparsed positionals on commands which happened
-// Use arg.GetParsed() to detect if arg was satisfied or not
+// Notes:
+//     Options.Default is only used for unparsed positionals on commands which happened
+//     Use arg.GetParsed() to detect if arg was satisfied or not
+//
+// Options.Nargs - Causes the argument to consume exactly the specified number of tokens from the command line.
+// An error will be thrown if the specified number cannot be consumed.
+// Flag-style (-/--) arguments are parsed before positionals. They will consume the specified number of tokens
+// and subsequently positional arguments will consume their specified number of tokens.
+// Notes:
+//     A positional with Narg:0 must be the final positional defined in any command heirarchy.
+//     Multiple positionals with Narg:0 specified will cause any call to Parse() to return an error.
+//     Options.Required does not effect parsing of Nargs in any way.
+//     There is no way to specify "consume up to X".
+// +X causes consumption of as many tokens as specified, no exceptions or bypass (matching current flag-style behavior),
+// which will consume any token regardless of it is preceded by -/--, matches an argument or would satisfy a positional.
+// 0 causes consumption of as many tokens as possible, ending without error if a flag-style arg is seen, which may
+// cause "unknown argument" errors if a user breaks up a token series with a flag-style arg, as the remainder tokens are unparsed.
+// -X causes consumption of as many tokens as specified, halting with an error if a flag-style arg is seen, which
+// allows applications to more easily detect the condition when a user failed to supply the specified number of args.
 //
 // Options.Required - tells Parser that this argument is required to be provided.
 // useful when specific Command requires some data provided.
@@ -108,10 +137,12 @@ type Parser struct {
 // in case if this argument was not supplied on command line. File default value is a string which it will be open with
 // provided options. In case if provided value type does not match expected, the error will be returned on run-time.
 type Options struct {
-	Required bool
-	Validate func(args []string) error
-	Help     string
-	Default  interface{}
+	Required  bool
+	Validate  func(args []string) error
+	Help      string
+	Default   interface{}
+	NargsMode int
+	Nargs     int
 
 	// Private modifiers
 	positional bool
@@ -203,6 +234,7 @@ func (o *Parser) SetHelp(sname, lname string) {
 // Returns pointer to boolean with starting value `false`. If Parser finds the flag
 // provided on Command line arguments, then the value is changed to true.
 // Set of Flag and FlagCounter shorthand arguments can be combined together such as `tar -cvaf foo.tar foo`
+// Narg Compatibility: Incompatible
 func (o *Command) Flag(short string, long string, opts *Options) *bool {
 	var result bool
 
@@ -230,6 +262,7 @@ func (o *Command) Flag(short string, long string, opts *Options) *bool {
 // Returns pointer to integer with starting value `0`. Each time Parser finds the flag
 // provided on Command line arguments, the value is incremented by 1.
 // Set of FlagCounter and Flag shorthand arguments can be combined together such as `tar -cvaf foo.tar foo`
+// Narg Compatibility: Incompatible
 func (o *Command) FlagCounter(short string, long string, opts *Options) *int {
 	var result int
 
@@ -694,7 +727,7 @@ func arguments2Result(result string, arguments []*arg, maxWidth int) string {
 				} else {
 					arg = arg + "    "
 				}
-				if arg.GetPositional() {
+				if argument.GetPositional() {
 					arg = arg + argument.lname
 				} else {
 					arg = arg + "--" + argument.lname

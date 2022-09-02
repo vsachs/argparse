@@ -86,6 +86,26 @@ func TestInternalFunctionCheck(t *testing.T) {
 	a.parsed = false
 }
 
+func TestUnknownArguments(t *testing.T) {
+	p := NewParser("p", "description")
+	args := []string{"p", "-a", "b", "c"}
+	if err := p.Parse(args); err == nil {
+		t.Errorf("Error expected")
+	} else if err.Error() != "unknown arguments -a b c" {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	p = NewParser("p", "description")
+	_ = p.String("a", "flag-arg1", nil)
+	_ = p.Flag("b", "flag-arg2", nil)
+
+	if err := p.Parse(args); err == nil {
+		t.Errorf("Error expected")
+	} else if err.Error() != "unknown arguments c" {
+		t.Errorf("Unexpected error: %v", err)
+	}
+}
+
 func TestFlagAddArgumentFail(t *testing.T) {
 	type testCase struct {
 		testName, shortArg, longArg, failureMessage string
@@ -331,6 +351,28 @@ func TestShortFlagEqualChar(t *testing.T) {
 	if *flag3 != "test3" {
 		t.Errorf("Test %s failed with flag3 being true", t.Name())
 		return
+	}
+}
+
+func TestReusedFlagEqualChar(t *testing.T) {
+	testArgs := []string{"progname", "-a=test1", "-a", "2", "-a=test3",
+		"--flag1=test4", "-a", "5", "--flag1", "6"}
+	exp := []string{"test1", "2", "test3", "test4", "5", "6"}
+	p := NewParser("", "description")
+	flag1 := p.StringList("a", "flag1", nil)
+	_ = p.Int("b", "flag2", nil)
+
+	err := p.Parse(testArgs)
+	if err != nil {
+		t.Errorf("Test %s failed with error: %s", t.Name(), err.Error())
+	}
+
+	if flag1 == nil {
+		t.Errorf("Test %s failed with flag1 being nil pointer", t.Name())
+	}
+
+	if !reflect.DeepEqual(*flag1, exp) {
+		t.Errorf("Test %s failed with flag1 being wrong: %v", t.Name(), flag1)
 	}
 }
 
@@ -942,7 +984,7 @@ func TestEqualNoValFailSimple(t *testing.T) {
 	i1 := p.Int("f", "flag-arg1", nil)
 
 	err := p.Parse(testArgs)
-	errStr := "not enough arguments for -f|--flag-arg1"
+	errStr := "empty value for -f|--flag-arg1"
 	if err == nil || err.Error() != errStr {
 		t.Errorf("Test %s expected [%s], got [%+v]", t.Name(), errStr, err)
 		return
